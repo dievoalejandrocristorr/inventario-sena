@@ -139,7 +139,7 @@ else:
                 sheet = cliente.open("general").sheet1
                 data = sheet.get_all_records()
                 df = pd.DataFrame(data)
-                busqueda = st.text_input("Buscar material (ej: Marco, 3893, Sillar)")
+                busqueda = st.text_input("Buscar material (ej: Marco, 3893, Sillar, Chapa)")
 
                 if busqueda and not df.empty:
                     df = df[
@@ -157,23 +157,81 @@ else:
             st.error(f"Error al conectar con la hoja de Google Sheets: {e}")
 
     # =========================================================
-    # 2. REGISTRAR MOVIMIENTO
+    # 2. REGISTRAR MOVIMIENTO (Actualización automática en GSheets)
     # =========================================================
     elif opcion == "Registrar Movimiento":
         st.header("📝 Registro de Entradas y Salidas")
-        with st.form("registro"):
-            tipo = st.selectbox("Tipo de movimiento", ["SALIDA (Gasto)", "ENTRADA (Ingreso)"])
-            ref = st.text_input("Referencia del material")
-            cant = st.text_input("Cantidad (cm o Unidades)")
-            obra = st.text_input("Nota / Obra / Destino")
+        
+        try:
+            cliente = conectar_gsheets()
+            if cliente:
+                sheet = cliente.open("general").sheet1
+                data = sheet.get_all_records()
+                df_inv = pd.DataFrame(data)
+                
+                # Lista de materiales para selector fácil
+                opciones_materiales = []
+                for idx, row in df_inv.iterrows():
+                    ref_str = str(row.get("Referencia", "")).strip()
+                    desc_str = str(row.get("Descripcion", "")).strip()
+                    if ref_str and ref_str != "nan":
+                        label = f"{ref_str} | {desc_str}"
+                    else:
+                        label = f"{desc_str}"
+                    opciones_materiales.append(label)
 
-            enviar = st.form_submit_button("Guardar Registro")
-            if enviar:
-                fecha = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                log = f"[{fecha}] | {tipo} | {st.session_state.username} | REF: {ref} | CANT: {cant} | NOTA: {obra}\n"
-                with open(ARCHIVO_LOG, "a") as f:
-                    f.write(log)
-                st.success("¡Registro guardado con éxito!")
+                with st.form("registro"):
+                    tipo = st.selectbox("Tipo de movimiento", ["SALIDA (Gasto)", "ENTRADA (Ingreso)"])
+                    
+                    # Selector con buscador automático del material
+                    material_seleccionado = st.selectbox(
+                        "Seleccionar Material", 
+                        opciones_materiales,
+                        help="Busca por nombre o por referencia"
+                    )
+                    
+                    cant_num = st.number_input("Cantidad", min_value=1, value=1, step=1)
+                    obra = st.text_input("Nota / Obra / Destino")
+
+                    enviar = st.form_submit_button("Guardar Registro y Actualizar Inventario")
+                    
+                    if enviar:
+                        # Encontrar la fila correspondiente en la hoja de Google Sheets
+                        # +2 porque gspread empieza en fila 1 y la fila 1 son los encabezados
+                        fila_index = opciones_materiales.index(material_seleccionado) + 2
+                        
+                        # Definir columnas de la hoja 'general':
+                        # J = Entrada (columna 10), K = Salida (columna 11)
+                        if "SALIDA" in tipo:
+                            col_target = 11  # Columna K
+                            header_name = "Salida"
+                        else:
+                            col_target = 10  # Columna J
+                            header_name = "Entrada"
+
+                        # Leer valor actual en Google Sheets
+                        val_actual = sheet.cell(fila_index, col_target).value
+                        try:
+                            val_num = int(val_actual) if val_actual else 0
+                        except ValueError:
+                            val_num = 0
+                            
+                        nuevo_valor = val_num + int(cant_num)
+                        
+                        # Actualizar en Google Sheets
+                        sheet.update_cell(fila_index, col_target, nuevo_valor)
+                        
+                        # Guardar auditoría local
+                        fecha = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                        log = f"[{fecha}] | {tipo} | {st.session_state.username} | MAT: {material_seleccionado} | CANT: {cant_num} | NOTA: {obra}\n"
+                        with open(ARCHIVO_LOG, "a") as f:
+                            f.write(log)
+                            
+                        st.success(f"¡Inventario actualizado! Se registraron {cant_num} unidad(es) para '{material_seleccionado}'.")
+            else:
+                st.error("No se pudo conectar a Google Sheets para actualizar el inventario.")
+        except Exception as e:
+            st.error(f"Error al procesar el movimiento: {e}")
 
     # =========================================================
     # 3. GUÍA PARA APRENDICES
