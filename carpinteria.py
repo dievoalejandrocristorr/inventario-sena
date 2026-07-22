@@ -157,7 +157,7 @@ else:
             st.error(f"Error al conectar con la hoja de Google Sheets: {e}")
 
     # =========================================================
-    # 2. REGISTRAR MOVIMIENTO (Actualización automática en GSheets)
+    # 2. REGISTRAR MOVIMIENTO (Actualización directa de Saldo)
     # =========================================================
     elif opcion == "Registrar Movimiento":
         st.header("📝 Registro de Entradas y Salidas")
@@ -196,38 +196,47 @@ else:
                     enviar = st.form_submit_button("Guardar Registro y Actualizar Inventario")
                     
                     if enviar:
-                        # Encontrar la fila correspondiente en la hoja de Google Sheets
-                        # +2 porque gspread empieza en fila 1 y la fila 1 son los encabezados
+                        # Encontrar la fila correspondiente en Google Sheets (+2 por encabezado)
                         fila_index = opciones_materiales.index(material_seleccionado) + 2
                         
-                        # Definir columnas de la hoja 'general':
-                        # J = Entrada (columna 10), K = Salida (columna 11)
+                        # Mapeo de columnas según la hoja 'general':
+                        # J = Entrada (col 10), K = Salida (col 11), L = Saldo (col 12)
+                        col_saldo = 12
+                        
                         if "SALIDA" in tipo:
-                            col_target = 11  # Columna K
-                            header_name = "Salida"
+                            col_target = 11  # Columna K (Salida)
                         else:
-                            col_target = 10  # Columna J
-                            header_name = "Entrada"
+                            col_target = 10  # Columna J (Entrada)
 
-                        # Leer valor actual en Google Sheets
-                        val_actual = sheet.cell(fila_index, col_target).value
+                        # 1. Actualizar el historial de Entrada/Salida
+                        val_mov_actual = sheet.cell(fila_index, col_target).value
                         try:
-                            val_num = int(val_actual) if val_actual else 0
+                            val_mov_num = int(val_mov_actual) if val_mov_actual else 0
                         except ValueError:
-                            val_num = 0
-                            
-                        nuevo_valor = val_num + int(cant_num)
+                            val_mov_num = 0
+                        sheet.update_cell(fila_index, col_target, val_mov_num + int(cant_num))
                         
-                        # Actualizar en Google Sheets
-                        sheet.update_cell(fila_index, col_target, nuevo_valor)
+                        # 2. Actualizar directamente la columna SALDO (Columna L)
+                        val_saldo_actual = sheet.cell(fila_index, col_saldo).value
+                        try:
+                            saldo_num = int(val_saldo_actual) if val_saldo_actual else 0
+                        except ValueError:
+                            saldo_num = 0
+
+                        if "SALIDA" in tipo:
+                            nuevo_saldo = max(0, saldo_num - int(cant_num))
+                        else:
+                            nuevo_saldo = saldo_num + int(cant_num)
+
+                        sheet.update_cell(fila_index, col_saldo, nuevo_saldo)
                         
-                        # Guardar auditoría local
+                        # 3. Guardar en historial de auditoría local
                         fecha = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
                         log = f"[{fecha}] | {tipo} | {st.session_state.username} | MAT: {material_seleccionado} | CANT: {cant_num} | NOTA: {obra}\n"
                         with open(ARCHIVO_LOG, "a") as f:
                             f.write(log)
                             
-                        st.success(f"¡Inventario actualizado! Se registraron {cant_num} unidad(es) para '{material_seleccionado}'.")
+                        st.success(f"¡Inventario actualizado! Nuevo saldo de '{material_seleccionado}': {nuevo_saldo} unidades.")
             else:
                 st.error("No se pudo conectar a Google Sheets para actualizar el inventario.")
         except Exception as e:
