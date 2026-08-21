@@ -78,6 +78,9 @@ def guardar_df_hoja(nombre_hoja, df):
 if "autenticado" not in st.session_state:
     st.session_state.autenticado = False
 
+if "mostrar_saludo" not in st.session_state:
+    st.session_state.mostrar_saludo = False
+
 if not st.session_state.autenticado:
     st.title("🔐 Acceso al Sistema de Carpintería")
 
@@ -128,44 +131,89 @@ if not st.session_state.autenticado:
             st.session_state.autenticado = True
             st.session_state.username = user
             st.session_state.rol = user_match.iloc[0]["Rol"]
-            st.toast(f"¡Bienvenido de nuevo, {user.capitalize()}!", icon="👋")
+            st.session_state.mostrar_saludo = True
             st.rerun()
         else:
             st.error("Usuario o contraseña incorrectos")
 
 else:
+    # --- NOTIFICACIÓN FLOTANTE DISCRETA (Sin globos) ---
+    if st.session_state.mostrar_saludo:
+        st.toast(f"¡Bienvenido de nuevo, {st.session_state.username.capitalize()}! 👋", icon="✅")
+        st.session_state.mostrar_saludo = False
+
+    # Banner Institucional Gigante y Elegante
+    nombre_usuario = st.session_state.username.capitalize()
+    rol_usuario = st.session_state.rol
+    
+    st.markdown(
+        f"""
+        <div style="
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            padding: 24px 32px;
+            border-radius: 12px;
+            border-left: 6px solid #3b82f6;
+            margin-bottom: 25px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        ">
+            <h1 style="color: #ffffff; margin:0; font-size: 2.2rem; font-weight: 700; font-family: 'Segoe UI', sans-serif;">
+                👋 ¡Bienvenido(a) de nuevo, <span style="color: #60a5fa;">{nombre_usuario}</span>!
+            </h1>
+            <p style="color: #94a3b8; margin: 6px 0 0 0; font-size: 1.05rem;">
+                🛠️ <b>Sistema de Control y Gestión del Taller CIMM</b> | Rol: <span style="background-color: #334155; color: #38bdf8; padding: 2px 8px; border-radius: 4px; font-weight: 600;">{rol_usuario}</span>
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
     # --- SIDEBAR ---
-    st.sidebar.title(f"Bienvenido, {st.session_state.username.capitalize()}")
+    st.sidebar.title(f"👤 {nombre_usuario}")
 
     opcion = st.sidebar.radio(
-        "Menú",
+        "Menú de Navegación",
         ["Inventario", "Registrar Movimiento", "Guía para Aprendices", "Panel Admin"],
     )
 
-    if st.sidebar.button("Cerrar Sesión", use_container_width=True):
+    if st.sidebar.button("🚪 Cerrar Sesión", use_container_width=True):
         st.session_state.autenticado = False
         st.rerun()
 
     # =========================================================
-    # 1. INVENTARIO
+    # 1. INVENTARIO (Con Métricas Resumen)
     # =========================================================
     if opcion == "Inventario":
-        st.title("📊 Saldo de Materiales en Taller")
+        st.subheader("📊 Saldo de Materiales en Taller")
         try:
             ws_gen = obtener_hoja("sheet1") or obtener_hoja("Inventario")
             if ws_gen:
                 data = ws_gen.get_all_records()
                 df = pd.DataFrame(data)
                 
-                busqueda = st.text_input("🔍 Buscar material (ej: Marco, 3893, Sillar, Chapa)")
-
-                if busqueda and not df.empty:
-                    df = df[
-                        df["Descripcion"].astype(str).str.contains(busqueda, case=False, na=False)
-                        | df["Referencia"].astype(str).str.contains(busqueda, case=False, na=False)
-                    ]
-
                 if not df.empty:
+                    # Tarjetas Resumen (KPIs)
+                    col_m1, col_m2, col_m3 = st.columns(3)
+                    col_m1.metric("📦 Total Referencias", len(df))
+
+                    # Búsqueda dinámica de la columna de saldo/disponible
+                    col_saldo = [c for c in df.columns if any(k in c.lower() for k in ["saldo", "disponible", "stock", "existencia"])]
+                    if col_saldo:
+                        s_col = col_saldo[0]
+                        df[s_col] = pd.to_numeric(df[s_col], errors='coerce').fillna(0)
+                        con_stock = len(df[df[s_col] > 0])
+                        sin_stock = len(df[df[s_col] <= 0])
+                        col_m2.metric("✅ Material Disponible", con_stock)
+                        col_m3.metric("⚠️ Agotados / Sin Stock", sin_stock, delta_color="inverse")
+
+                    st.markdown("---")
+                    busqueda = st.text_input("🔍 Buscar material (ej: Marco, 3893, Sillar, Chapa)")
+
+                    if busqueda:
+                        df = df[
+                            df["Descripcion"].astype(str).str.contains(busqueda, case=False, na=False)
+                            | df["Referencia"].astype(str).str.contains(busqueda, case=False, na=False)
+                        ]
+
                     st.dataframe(df, use_container_width=True)
                 else:
                     st.info("No hay registros en la hoja de cálculo.")
@@ -178,7 +226,7 @@ else:
     # 2. REGISTRAR MOVIMIENTO (Diseño Pro 2 Columnas)
     # =========================================================
     elif opcion == "Registrar Movimiento":
-        st.title("📝 Registro de Entradas y Salidas")
+        st.subheader("📝 Registro de Entradas y Salidas")
         st.caption("Aumenta o descuenta material del inventario y guarda la auditoría.")
 
         try:
@@ -199,9 +247,8 @@ else:
                     opciones_materiales.append(label)
 
                 with st.container(border=True):
-                    st.subheader("Formulario de Movimiento")
+                    st.markdown("#### Formulario de Movimiento")
                     with st.form("registro", clear_on_submit=True):
-                        # Fila 1: Tipo de movimiento y Cantidad juntos
                         col_tipo, col_cant = st.columns([2, 1])
                         with col_tipo:
                             tipo = st.selectbox(
@@ -212,14 +259,12 @@ else:
                         with col_cant:
                             cant_num = st.number_input("Cantidad", min_value=1, value=1, step=1)
 
-                        # Fila 2: Material
                         material_seleccionado = st.selectbox(
                             "Seleccionar Material", 
                             opciones_materiales,
                             help="Escribe la referencia o el nombre para buscar rápido"
                         )
 
-                        # Fila 3: Obra o Destino
                         obra = st.text_input("Nota / Obra / Destino", placeholder="Ej: Marcos Ventana, Ficha 2837, etc.")
 
                         st.markdown("---")
@@ -251,7 +296,7 @@ else:
                             fecha = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
                             ws_auditoria.append_row([fecha, tipo, st.session_state.username, material_seleccionado, cant_num, obra])
                                 
-                            st.toast("✅ ¡Movimiento registrado exitosamente!", icon="🎉")
+                            st.toast("✅ ¡Movimiento registrado exitosamente!", icon="📦")
                             st.success(f"✅ **¡Inventario actualizado!** Nuevo saldo disponible para **'{material_seleccionado}'**: `{nuevo_saldo}` unidades.")
             else:
                 st.error("No se pudo conectar a Google Sheets para actualizar el inventario.")
@@ -262,30 +307,30 @@ else:
     # 3. GUÍA PARA APRENDICES
     # =========================================================
     elif opcion == "Guía para Aprendices":
-        st.title("📏 Consulta de Perfiles por Proyecto")
+        st.subheader("📏 Consulta de Perfiles por Proyecto")
         proyecto = st.selectbox("Seleccione el proyecto", ["PTA", "DBB", "PB", "DO"])
         try:
             ARCHIVO_MEMORIAS = "Memorias.xlsx"
             df_m = pd.read_excel(ARCHIVO_MEMORIAS, sheet_name=proyecto)
-            st.subheader(f"Perfiles necesarios para {proyecto}")
+            st.write(f"**Perfiles necesarios para {proyecto}:**")
             st.table(df_m.iloc[29:35, [10, 12, 14]])
             st.info("Nota: Verifique los descuentos de corte antes de usar la tronzadora.")
         except Exception:
             st.error("No se pudo cargar la guía de Memorias.xlsx")
 
     # =========================================================
-    # 4. PANEL ADMIN (Renovado con Auditoría Tabla Pro & Animaciones)
+    # 4. PANEL ADMIN
     # =========================================================
     elif opcion == "Panel Admin":
         if st.session_state.rol == "ADMIN":
-            st.title("⚙️ Control de Administrador")
+            st.subheader("⚙️ Control de Administrador")
             tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "📋 Auditoría", "📩 Solicitudes de Clave", "➕ Crear Usuarios", "🗑️ Gestionar Usuarios", "🔑 Restablecer Clave"
             ])
 
-            # Tab 1: Auditoría (Opción A - Tabla Pro con Filtro y Colores)
+            # Tab 1: Auditoría (Tabla Pro con Filtros)
             with tab1:
-                st.subheader("📜 Historial Completo de Movimientos")
+                st.markdown("#### 📜 Historial Completo de Movimientos")
                 df_aud = cargar_df_hoja("Auditoria", ["Fecha", "Tipo", "Usuario", "Material", "Cantidad", "Nota"])
                 
                 if not df_aud.empty:
@@ -326,7 +371,7 @@ else:
 
             # Tab 2: Solicitudes de Clave
             with tab2:
-                st.subheader("📩 Peticiones de cambio pendientes")
+                st.markdown("#### 📩 Peticiones de cambio pendientes")
                 df_sol = cargar_df_hoja("Solicitudes", ["Fecha", "Usuario", "Nueva_Clave"])
                 
                 if not df_sol.empty:
@@ -345,7 +390,6 @@ else:
                                         df_sol = df_sol.drop(i)
                                         guardar_df_hoja("Solicitudes", df_sol)
                                         
-                                        st.balloons()
                                         st.toast(f"✅ Clave cambiada para {row['Usuario']}", icon="🔐")
                                         st.success(f"¡Cambio aplicado a {row['Usuario']}!")
                                         st.rerun()
@@ -363,7 +407,7 @@ else:
             # Tab 3: Crear Usuarios
             with tab3:
                 with st.container(border=True):
-                    st.subheader("➕ Crear Nuevo Usuario")
+                    st.markdown("#### ➕ Crear Nuevo Usuario")
                     new_u = st.text_input("Nombre del compañero")
                     new_p = st.text_input("Contraseña para él", type="password")
                     new_r = st.selectbox("Rol", ["USER", "ADMIN"])
@@ -378,14 +422,14 @@ else:
                                     df_nuevo = pd.DataFrame([[new_u.lower(), new_p, new_r]], columns=["Usuario", "Password", "Rol"])
                                     df_final = pd.concat([df_users, df_nuevo], ignore_index=True)
                                     guardar_df_hoja("Usuarios", df_final)
-                                    st.toast(f"👤 Usuario '{new_u}' creado con éxito", icon="🎉")
+                                    st.toast(f"👤 Usuario '{new_u}' creado con éxito", icon="👤")
                                     st.success(f"Usuario '{new_u}' creado exitosamente en Google Sheets.")
                         else:
                             st.warning("Complete todos los campos.")
 
             # Tab 4: Gestionar y Eliminar Usuarios
             with tab4:
-                st.subheader("🗑️ Lista y Eliminación de Usuarios")
+                st.markdown("#### 🗑️ Lista y Eliminación de Usuarios")
                 df_users = cargar_df_hoja("Usuarios", ["Usuario", "Password", "Rol"])
                 st.dataframe(df_users, use_container_width=True)
                 
@@ -406,7 +450,7 @@ else:
             # Tab 5: Restablecer Clave Directo
             with tab5:
                 with st.container(border=True):
-                    st.subheader("🔑 Restablecer Contraseña Manual")
+                    st.markdown("#### 🔑 Restablecer Contraseña Manual")
                     usuario_reset = st.text_input("Usuario a restablecer")
                     nueva_pass = st.text_input("Nueva contraseña", type="password")
                     if st.button("Restablecer Contraseña", use_container_width=True):
