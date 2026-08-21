@@ -137,12 +137,12 @@ if not st.session_state.autenticado:
             st.error("Usuario o contraseña incorrectos")
 
 else:
-    # --- NOTIFICACIÓN FLOTANTE DISCRETA (Sin globos) ---
+    # --- NOTIFICACIÓN FLOTANTE DISCRETA ---
     if st.session_state.mostrar_saludo:
         st.toast(f"¡Bienvenido de nuevo, {st.session_state.username.capitalize()}! 👋", icon="✅")
         st.session_state.mostrar_saludo = False
 
-    # Banner Institucional Gigante y Elegante
+    # Banner Institucional
     nombre_usuario = st.session_state.username.capitalize()
     rol_usuario = st.session_state.rol
     
@@ -180,7 +180,7 @@ else:
         st.rerun()
 
     # =========================================================
-    # 1. INVENTARIO (Con Métricas Resumen)
+    # 1. INVENTARIO (Con Tarjeta Interactiva de Tornillería)
     # =========================================================
     if opcion == "Inventario":
         st.subheader("📊 Saldo de Materiales en Taller")
@@ -191,21 +191,57 @@ else:
                 df = pd.DataFrame(data)
                 
                 if not df.empty:
-                    # Tarjetas Resumen (KPIs)
-                    col_m1, col_m2, col_m3 = st.columns(3)
-                    col_m1.metric("📦 Total Referencias", len(df))
-
-                    # Búsqueda dinámica de la columna de saldo/disponible
+                    # Cálculo de Métricas Generales
                     col_saldo = [c for c in df.columns if any(k in c.lower() for k in ["saldo", "disponible", "stock", "existencia"])]
+                    
                     if col_saldo:
                         s_col = col_saldo[0]
                         df[s_col] = pd.to_numeric(df[s_col], errors='coerce').fillna(0)
                         con_stock = len(df[df[s_col] > 0])
                         sin_stock = len(df[df[s_col] <= 0])
-                        col_m2.metric("✅ Material Disponible", con_stock)
-                        col_m3.metric("⚠️ Agotados / Sin Stock", sin_stock, delta_color="inverse")
+                    else:
+                        con_stock, sin_stock = 0, 0
+
+                    # Filtrar referencias específicas de Tornillería
+                    df_tornillos = df[
+                        df["Descripcion"].astype(str).str.contains("tornill|pija|remache|chazo|tuerca", case=False, na=False) |
+                        df["Referencia"].astype(str).str.contains("tornill|pija|remache", case=False, na=False)
+                    ]
+
+                    # --- TARJETAS RESUMEN (KPIs) ---
+                    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                    col_m1.metric("📦 Total Referencias", len(df))
+                    col_m2.metric("✅ Material Disponible", con_stock)
+                    col_m3.metric("⚠️ Agotados / Sin Stock", sin_stock, delta_color="inverse")
+                    col_m4.metric("🔩 Ref. Tornillería", len(df_tornillos))
 
                     st.markdown("---")
+
+                    # --- PANEL INTERACTIVO DE TORNILLERÍA ---
+                    with st.expander("🔩 **Módulo Interactivo de Tornillería y Herrajes**", expanded=True):
+                        if not df_tornillos.empty:
+                            lista_ref_tornillos = ["-- Ver Todos los Tornillos --"] + df_tornillos["Descripcion"].astype(str).unique().tolist()
+                            
+                            tornillo_sel = st.selectbox(
+                                "🔍 Selecciona la referencia de tornillo a consultar:",
+                                lista_ref_tornillos,
+                                help="Selecciona un tornillo para ver sus datos específicos o 'Ver Todos' para listar la tornillería."
+                            )
+
+                            if tornillo_sel != "-- Ver Todos los Tornillos --":
+                                df_res_tornillo = df_tornillos[df_tornillos["Descripcion"].astype(str) == tornillo_sel]
+                                st.success(f"📌 **Referencia Seleccionada:** {tornillo_sel}")
+                                st.dataframe(df_res_tornillo, use_container_width=True)
+                            else:
+                                st.info("Mostrando todo el inventario de tornillería registrado:")
+                                st.dataframe(df_tornillos, use_container_width=True)
+                        else:
+                            st.warning("No se encontraron elementos con la palabra 'Tornillo', 'Pija' o 'Remache' en la base de datos.")
+
+                    st.markdown("---")
+                    
+                    # --- BÚSQUEDA GENERAL DE INVENTARIO ---
+                    st.markdown("#### 📋 Todos los Perfiles y Materiales")
                     busqueda = st.text_input("🔍 Buscar material (ej: Marco, 3893, Sillar, Chapa)")
 
                     if busqueda:
@@ -328,7 +364,7 @@ else:
                 "📋 Auditoría", "📩 Solicitudes de Clave", "➕ Crear Usuarios", "🗑️ Gestionar Usuarios", "🔑 Restablecer Clave"
             ])
 
-            # Tab 1: Auditoría (Tabla Pro con Filtros)
+            # Tab 1: Auditoría
             with tab1:
                 st.markdown("#### 📜 Historial Completo de Movimientos")
                 df_aud = cargar_df_hoja("Auditoria", ["Fecha", "Tipo", "Usuario", "Material", "Cantidad", "Nota"])
