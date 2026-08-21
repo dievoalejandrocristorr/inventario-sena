@@ -6,13 +6,7 @@ import gspread
 import pandas as pd
 import streamlit as st
 
-# --- CONFIGURACIÓN DE ARCHIVOS Y GOOGLE SHEETS ---
-ARCHIVO_MEMORIAS = "Memorias.xlsx"
-ARCHIVO_USUARIOS = "usuarios_taller.csv"
-ARCHIVO_LOG = "auditoria_taller.txt"
-ARCHIVO_SOLICITUDES = "solicitudes_password.txt"
-
-# Configuración de la página
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Control Taller CIMM", layout="wide")
 
 SCOPES = [
@@ -20,6 +14,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+# --- CONEXIÓN A GOOGLE SHEETS ---
 @st.cache_resource
 def conectar_gsheets():
     if "gcp_service_account" in st.secrets:
@@ -54,13 +49,30 @@ def conectar_gsheets():
     client = gspread.authorize(creds)
     return client
 
-# Inicializar archivo de usuarios si no existe
-if not os.path.exists(ARCHIVO_USUARIOS):
-    df_u = pd.DataFrame(
-        [["alejandro", "Alejandro312.", "ADMIN"]],
-        columns=["Usuario", "Password", "Rol"],
-    )
-    df_u.to_csv(ARCHIVO_USUARIOS, index=False)
+# --- FUNCIONES AUXILIARES DE LECTURA Y ESCRITURA EN SHEETS ---
+def obtener_hoja(nombre_hoja):
+    cliente = conectar_gsheets()
+    if cliente:
+        try:
+            return cliente.open("general").worksheet(nombre_hoja)
+        except Exception:
+            doc = cliente.open("general")
+            return doc.add_worksheet(title=nombre_hoja, rows="100", cols="20")
+    return None
+
+def cargar_df_hoja(nombre_hoja, columnas_defecto):
+    ws = obtener_hoja(nombre_hoja)
+    if ws:
+        data = ws.get_all_records()
+        if data:
+            return pd.DataFrame(data)
+    return pd.DataFrame(columns=columnas_defecto)
+
+def guardar_df_hoja(nombre_hoja, df):
+    ws = obtener_hoja(nombre_hoja)
+    if ws:
+        ws.clear()
+        ws.update([df.columns.values.tolist()] + df.astype(str).values.tolist())
 
 # --- LOGIN ---
 if "autenticado" not in st.session_state:
@@ -89,22 +101,26 @@ if not st.session_state.autenticado:
 
         if st.button("Enviar solicitud al Administrador"):
             if user_solicita and nueva_pass_solicita:
-                df_u = pd.read_csv(ARCHIVO_USUARIOS)
-                if user_solicita.lower() in df_u["Usuario"].values:
+                df_u = cargar_df_hoja("Usuarios", ["Usuario", "Password", "Rol"])
+                if user_solicita.lower() in df_u["Usuario"].astype(str).str.lower().values:
                     fecha_sol = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                    linea_solicitud = f"{fecha_sol},{user_solicita.lower()},{nueva_pass_solicita}\n"
-                    with open(ARCHIVO_SOLICITUDES, "a") as f:
-                        f.write(linea_solicitud)
-                    st.success("¡Solicitud enviada! Dile a Alejandro que te la apruebe en el panel.")
+                    ws_sol = obtener_hoja("Solicitudes")
+                    ws_sol.append_row([fecha_sol, user_solicita.lower(), nueva_pass_solicita])
+                    st.success("¡Solicitud enviada! Dile al administrador que te la apruebe en el panel.")
                 else:
                     st.error("El usuario ingresado no existe en el sistema.")
             else:
                 st.warning("Por favor rellena ambos campos.")
 
     if boton_entrar:
-        df_u = pd.read_csv(ARCHIVO_USUARIOS)
+        df_u = cargar_df_hoja("Usuarios", ["Usuario", "Password", "Rol"])
+        if df_u.empty:
+            df_u = pd.DataFrame([["alejandro", "Alejandro312.", "ADMIN"]], columns=["Usuario", "Password", "Rol"])
+            guardar_df_hoja("Usuarios", df_u)
+
         user_match = df_u[
-            (df_u["Usuario"] == user.lower()) & (df_u["Password"] == pas)
+            (df_u["Usuario"].astype(str).str.lower() == user.lower()) & 
+            (df_u["Password"].astype(str) == pas)
         ]
 
         if not user_match.empty:
@@ -134,10 +150,9 @@ else:
     if opcion == "Inventario":
         st.header("📊 Saldo de Materiales en Taller")
         try:
-            cliente = conectar_gsheets()
-            if cliente:
-                sheet = cliente.open("general").sheet1
-                data = sheet.get_all_records()
+            ws_gen = obtener_hoja("sheet1") or obtener_hoja("Inventario")
+            if ws_gen:
+                data = ws_gen.get_all_records()
                 df = pd.DataFrame(data)
                 busqueda = st.text_input("Buscar material (ej: Marco, 3893, Sillar, Chapa)")
 
@@ -157,7 +172,7 @@ else:
             st.error(f"Error al conectar con la hoja de Google Sheets: {e}")
 
     # =========================================================
-    # 2. REGISTRAR MOVIMIENTO (Actualización directa de Saldo)
+    # 2. REGISTRAR MOVIMIENTO
     # =========================================================
     elif opcion == "Registrar Movimiento":
         st.header("📝 Registro de Entradas y Salidas")
@@ -169,7 +184,6 @@ else:
                 data = sheet.get_all_records()
                 df_inv = pd.DataFrame(data)
                 
-                # Lista de materiales para selector fácil
                 opciones_materiales = []
                 for idx, row in df_inv.iterrows():
                     ref_str = str(row.get("Referencia", "")).strip()
@@ -182,33 +196,22 @@ else:
 
                 with st.form("registro"):
                     tipo = st.selectbox("Tipo de movimiento", ["SALIDA (Gasto)", "ENTRADA (Ingreso)"])
-                    
-                    # Selector con buscador automático del material
                     material_seleccionado = st.selectbox(
                         "Seleccionar Material", 
                         opciones_materiales,
                         help="Busca por nombre o por referencia"
                     )
-                    
                     cant_num = st.number_input("Cantidad", min_value=1, value=1, step=1)
                     obra = st.text_input("Nota / Obra / Destino")
 
                     enviar = st.form_submit_button("Guardar Registro y Actualizar Inventario")
                     
                     if enviar:
-                        # Encontrar la fila correspondiente en Google Sheets (+2 por encabezado)
                         fila_index = opciones_materiales.index(material_seleccionado) + 2
-                        
-                        # Mapeo de columnas según la hoja 'general':
-                        # J = Entrada (col 10), K = Salida (col 11), L = Saldo (col 12)
                         col_saldo = 12
-                        
-                        if "SALIDA" in tipo:
-                            col_target = 11  # Columna K (Salida)
-                        else:
-                            col_target = 10  # Columna J (Entrada)
+                        col_target = 11 if "SALIDA" in tipo else 10
 
-                        # 1. Actualizar el historial de Entrada/Salida
+                        # 1. Actualizar Entradas/Salidas en Sheet1
                         val_mov_actual = sheet.cell(fila_index, col_target).value
                         try:
                             val_mov_num = int(val_mov_actual) if val_mov_actual else 0
@@ -216,25 +219,20 @@ else:
                             val_mov_num = 0
                         sheet.update_cell(fila_index, col_target, val_mov_num + int(cant_num))
                         
-                        # 2. Actualizar directamente la columna SALDO (Columna L)
+                        # 2. Actualizar Saldo (Columna L)
                         val_saldo_actual = sheet.cell(fila_index, col_saldo).value
                         try:
                             saldo_num = int(val_saldo_actual) if val_saldo_actual else 0
                         except ValueError:
                             saldo_num = 0
 
-                        if "SALIDA" in tipo:
-                            nuevo_saldo = max(0, saldo_num - int(cant_num))
-                        else:
-                            nuevo_saldo = saldo_num + int(cant_num)
-
+                        nuevo_saldo = max(0, saldo_num - int(cant_num)) if "SALIDA" in tipo else saldo_num + int(cant_num)
                         sheet.update_cell(fila_index, col_saldo, nuevo_saldo)
                         
-                        # 3. Guardar en historial de auditoría local
+                        # 3. Guardar en Auditoría en Google Sheets
+                        ws_auditoria = obtener_hoja("Auditoria")
                         fecha = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                        log = f"[{fecha}] | {tipo} | {st.session_state.username} | MAT: {material_seleccionado} | CANT: {cant_num} | NOTA: {obra}\n"
-                        with open(ARCHIVO_LOG, "a") as f:
-                            f.write(log)
+                        ws_auditoria.append_row([fecha, tipo, st.session_state.username, material_seleccionado, cant_num, obra])
                             
                         st.success(f"¡Inventario actualizado! Nuevo saldo de '{material_seleccionado}': {nuevo_saldo} unidades.")
             else:
@@ -249,11 +247,12 @@ else:
         st.header("📏 Consulta de Perfiles por Proyecto")
         proyecto = st.selectbox("Seleccione el proyecto", ["PTA", "DBB", "PB", "DO"])
         try:
+            ARCHIVO_MEMORIAS = "Memorias.xlsx"
             df_m = pd.read_excel(ARCHIVO_MEMORIAS, sheet_name=proyecto)
             st.subheader(f"Perfiles necesarios para {proyecto}")
             st.table(df_m.iloc[29:35, [10, 12, 14]])
             st.info("Nota: Verifique los descuentos de corte antes de usar la tronzadora.")
-        except:
+        except Exception:
             st.error("No se pudo cargar la guía de Memorias.xlsx")
 
     # =========================================================
@@ -262,81 +261,104 @@ else:
     elif opcion == "Panel Admin":
         if st.session_state.rol == "ADMIN":
             st.header("⚙️ Control de Administrador")
-            tab1, tab2, tab3, tab4 = st.tabs([
-                "Auditoría", "📩 Solicitudes de Clave", "Crear Usuarios", "Restablecer Contraseña Directo"
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "Auditoría", "📩 Solicitudes de Clave", "Crear Usuarios", "Gestionar/Eliminar Usuarios", "Restablecer Clave"
             ])
 
+            # Tab 1: Auditoría (Con ressaltado en colores)
             with tab1:
-                if os.path.exists(ARCHIVO_LOG):
-                    with open(ARCHIVO_LOG, "r") as f:
-                        st.text_area("Historial de movimientos", f.read(), height=300)
+                df_aud = cargar_df_hoja("Auditoria", ["Fecha", "Tipo", "Usuario", "Material", "Cantidad", "Nota"])
+                if not df_aud.empty:
+                    def color_movimiento(val):
+                        if "SALIDA" in str(val):
+                            return "color: #FF2B2B; font-weight: bold;"
+                        elif "ENTRADA" in str(val):
+                            return "color: #00D26A; font-weight: bold;"
+                        return ""
+
+                    df_estilizado = df_aud.style.map(color_movimiento, subset=["Tipo"])
+                    st.dataframe(df_estilizado, use_container_width=True)
                 else:
-                    st.write("No hay registros aún.")
+                    st.info("No hay registros en la auditoría aún.")
 
-            with tab4:
-                st.subheader("🔑 Restablecer Contraseña Manual")
-                usuario_reset = st.text_input("Usuario a restablecer")
-                nueva_pass = st.text_input("Nueva contraseña", type="password")
-                if st.button("Restablecer Contraseña"):
-                    df_users = pd.read_csv(ARCHIVO_USUARIOS)
-                    if usuario_reset.lower() in df_users["Usuario"].values:
-                        df_users.loc[df_users["Usuario"] == usuario_reset.lower(), "Password"] = nueva_pass
-                        df_users.to_csv(ARCHIVO_USUARIOS, index=False)
-                        st.success(f"Contraseña actualizada para {usuario_reset}")
-                    else:
-                        st.error("Usuario no encontrado")
-
+            # Tab 2: Solicitudes
             with tab2:
                 st.subheader("📩 Peticiones de cambio pendientes")
-                if os.path.exists(ARCHIVO_SOLICITUDES) and os.path.getsize(ARCHIVO_SOLICITUDES) > 0:
-                    with open(ARCHIVO_SOLICITUDES, "r") as f:
-                        lineas = f.readlines()
-                    
-                    solicitudes_pendientes = []
-                    for i, linea in enumerate(lineas):
-                        if linea.strip():
-                            f_sol, u_sol, p_sol = linea.strip().split(",")
-                            solicitudes_pendientes.append({
-                                "id": i, "Fecha": f_sol, "Usuario": u_sol, "Nueva_Clave": p_sol,
-                            })
-
-                    for sol in solicitudes_pendientes:
+                df_sol = cargar_df_hoja("Solicitudes", ["Fecha", "Usuario", "Nueva_Clave"])
+                
+                if not df_sol.empty:
+                    for i, row in df_sol.iterrows():
                         col_info, col_btn_si, col_btn_no = st.columns([3, 1, 1])
                         with col_info:
-                            st.write(f"📅 **{sol['Fecha']}** | El usuario **{sol['Usuario']}** solicita cambiar su contraseña a: `{sol['Nueva_Clave']}`")
+                            st.write(f"📅 **{row['Fecha']}** | El usuario **{row['Usuario']}** solicita cambiar clave a: `{row['Nueva_Clave']}`")
                         with col_btn_si:
-                            if st.button("✅ Aprobar", key=f"apr_{sol['id']}"):
-                                df_users = pd.read_csv(ARCHIVO_USUARIOS)
-                                df_users.loc[df_users["Usuario"] == sol["Usuario"], "Password"] = sol["Nueva_Clave"]
-                                df_users.to_csv(ARCHIVO_USUARIOS, index=False)
-                                del lineas[sol["id"]]
-                                with open(ARCHIVO_SOLICITUDES, "w") as f:
-                                    f.writelines(lineas)
-                                st.success(f"¡Cambio aplicado a {sol['Usuario']}!")
+                            if st.button("✅ Aprobar", key=f"apr_{i}"):
+                                df_users = cargar_df_hoja("Usuarios", ["Usuario", "Password", "Rol"])
+                                df_users.loc[df_users["Usuario"].astype(str).str.lower() == str(row["Usuario"]).lower(), "Password"] = str(row["Nueva_Clave"])
+                                guardar_df_hoja("Usuarios", df_users)
+                                
+                                df_sol = df_sol.drop(i)
+                                guardar_df_hoja("Solicitudes", df_sol)
+                                st.success(f"¡Cambio aplicado a {row['Usuario']}!")
                                 st.rerun()
                         with col_btn_no:
-                            if st.button("❌ Rechazar", key=f"rec_{sol['id']}"):
-                                del lineas[sol["id"]]
-                                with open(ARCHIVO_SOLICITUDES, "w") as f:
-                                    f.writelines(lineas)
+                            if st.button("❌ Rechazar", key=f"rec_{i}"):
+                                df_sol = df_sol.drop(i)
+                                guardar_df_hoja("Solicitudes", df_sol)
                                 st.warning("Solicitud descartada.")
                                 st.rerun()
                         st.markdown("---")
                 else:
-                    st.info("No tienes solicitudes de cambio de contraseña pendientes por ahora. 👍")
+                    st.info("No tienes solicitudes de cambio de contraseña pendientes. 👍")
 
+            # Tab 3: Crear Usuarios
             with tab3:
+                st.subheader("➕ Crear Nuevo Usuario")
                 new_u = st.text_input("Nombre del compañero")
                 new_p = st.text_input("Contraseña para él", type="password")
                 new_r = st.selectbox("Rol", ["USER", "ADMIN"])
                 if st.button("Crear Usuario"):
                     if new_u and new_p:
-                        df_users_actual = pd.read_csv(ARCHIVO_USUARIOS)
-                        df_nuevo = pd.DataFrame([[new_u.lower(), new_p, new_r]], columns=["Usuario", "Password", "Rol"])
-                        df_final = pd.concat([df_users_actual, df_nuevo], ignore_index=True)
-                        df_final.to_csv(ARCHIVO_USUARIOS, index=False)
-                        st.success(f"Usuario {new_u} creado.")
+                        df_users = cargar_df_hoja("Usuarios", ["Usuario", "Password", "Rol"])
+                        if new_u.lower() in df_users["Usuario"].astype(str).str.lower().values:
+                            st.error("El usuario ya existe.")
+                        else:
+                            df_nuevo = pd.DataFrame([[new_u.lower(), new_p, new_r]], columns=["Usuario", "Password", "Rol"])
+                            df_final = pd.concat([df_users, df_nuevo], ignore_index=True)
+                            guardar_df_hoja("Usuarios", df_final)
+                            st.success(f"Usuario '{new_u}' creado exitosamente en Google Sheets.")
                     else:
                         st.warning("Complete todos los campos.")
+
+            # Tab 4: Gestionar y Eliminar Usuarios
+            with tab4:
+                st.subheader("🗑️ Lista y Eliminación de Usuarios")
+                df_users = cargar_df_hoja("Usuarios", ["Usuario", "Password", "Rol"])
+                st.dataframe(df_users, use_container_width=True)
+                
+                u_eliminar = st.selectbox("Seleccione usuario a eliminar", df_users["Usuario"].tolist() if not df_users.empty else [])
+                if st.button("❌ Eliminar Usuario Seleccionado"):
+                    if u_eliminar:
+                        if u_eliminar.lower() == st.session_state.username.lower():
+                            st.error("No puedes eliminar tu propio usuario en sesión.")
+                        else:
+                            df_final = df_users[df_users["Usuario"].astype(str).str.lower() != str(u_eliminar).lower()]
+                            guardar_df_hoja("Usuarios", df_final)
+                            st.success(f"Usuario '{u_eliminar}' eliminado correctamente.")
+                            st.rerun()
+
+            # Tab 5: Restablecer Clave Directo
+            with tab5:
+                st.subheader("🔑 Restablecer Contraseña Manual")
+                usuario_reset = st.text_input("Usuario a restablecer")
+                nueva_pass = st.text_input("Nueva contraseña", type="password")
+                if st.button("Restablecer Contraseña"):
+                    df_users = cargar_df_hoja("Usuarios", ["Usuario", "Password", "Rol"])
+                    if usuario_reset.lower() in df_users["Usuario"].astype(str).str.lower().values:
+                        df_users.loc[df_users["Usuario"].astype(str).str.lower() == usuario_reset.lower(), "Password"] = nueva_pass
+                        guardar_df_hoja("Usuarios", df_users)
+                        st.success(f"Contraseña actualizada para {usuario_reset} en Google Sheets.")
+                    else:
+                        st.error("Usuario no encontrado")
         else:
             st.warning("No tienes permiso para ver esta sección.")
