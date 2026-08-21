@@ -180,7 +180,7 @@ else:
         st.rerun()
 
     # =========================================================
-    # 1. INVENTARIO (Con Tarjeta Interactiva de Tornillería)
+    # 1. INVENTARIO (Con Métrica Dinámica de Tornillería)
     # =========================================================
     if opcion == "Inventario":
         st.subheader("📊 Saldo de Materiales en Taller")
@@ -191,66 +191,77 @@ else:
                 df = pd.DataFrame(data)
                 
                 if not df.empty:
-                    # Cálculo de Métricas Generales
+                    # Identificar columna de stock/saldo
                     col_saldo = [c for c in df.columns if any(k in c.lower() for k in ["saldo", "disponible", "stock", "existencia"])]
+                    s_col = col_saldo[0] if col_saldo else None
                     
-                    if col_saldo:
-                        s_col = col_saldo[0]
+                    if s_col:
                         df[s_col] = pd.to_numeric(df[s_col], errors='coerce').fillna(0)
                         con_stock = len(df[df[s_col] > 0])
                         sin_stock = len(df[df[s_col] <= 0])
                     else:
                         con_stock, sin_stock = 0, 0
 
-                    # Filtrar referencias específicas de Tornillería
+                    # Filtrar elementos de Tornillería
                     df_tornillos = df[
                         df["Descripcion"].astype(str).str.contains("tornill|pija|remache|chazo|tuerca", case=False, na=False) |
                         df["Referencia"].astype(str).str.contains("tornill|pija|remache", case=False, na=False)
                     ]
 
-                    # --- TARJETAS RESUMEN (KPIs) ---
+                    # --- FILA DE CUADROS / MÉTRICAS ---
                     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                    
                     col_m1.metric("📦 Total Referencias", len(df))
                     col_m2.metric("✅ Material Disponible", con_stock)
                     col_m3.metric("⚠️ Agotados / Sin Stock", sin_stock, delta_color="inverse")
-                    col_m4.metric("🔩 Ref. Tornillería", len(df_tornillos))
 
-                    st.markdown("---")
-
-                    # --- PANEL INTERACTIVO DE TORNILLERÍA ---
-                    with st.expander("🔩 **Módulo Interactivo de Tornillería y Herrajes**", expanded=True):
+                    # --- CUADRO INTERACTIVO DE TORNILLERÍA ---
+                    with col_m4:
                         if not df_tornillos.empty:
-                            lista_ref_tornillos = ["-- Ver Todos los Tornillos --"] + df_tornillos["Descripcion"].astype(str).unique().tolist()
+                            opciones_t = ["Todas las Ref. (" + str(len(df_tornillos)) + ")"] + df_tornillos["Descripcion"].astype(str).unique().tolist()
                             
-                            tornillo_sel = st.selectbox(
-                                "🔍 Selecciona la referencia de tornillo a consultar:",
-                                lista_ref_tornillos,
-                                help="Selecciona un tornillo para ver sus datos específicos o 'Ver Todos' para listar la tornillería."
+                            ref_elegida = st.selectbox(
+                                "🔩 Ref. Tornillería",
+                                opciones_t,
+                                key="select_tornillo_metric"
                             )
 
-                            if tornillo_sel != "-- Ver Todos los Tornillos --":
-                                df_res_tornillo = df_tornillos[df_tornillos["Descripcion"].astype(str) == tornillo_sel]
-                                st.success(f"📌 **Referencia Seleccionada:** {tornillo_sel}")
-                                st.dataframe(df_res_tornillo, use_container_width=True)
+                            if ref_elegida.startswith("Todas las Ref."):
+                                val_mostrar = len(df_tornillos)
+                                etiq_sub = "Total Referencias"
                             else:
-                                st.info("Mostrando todo el inventario de tornillería registrado:")
-                                st.dataframe(df_tornillos, use_container_width=True)
+                                df_sel_t = df_tornillos[df_tornillos["Descripcion"].astype(str) == ref_elegida]
+                                if s_col and not df_sel_t.empty:
+                                    val_mostrar = int(df_sel_t[s_col].sum())
+                                    etiq_sub = "Unidades en Stock"
+                                else:
+                                    val_mostrar = 0
+                                    etiq_sub = "Sin Columna Saldo"
+
+                            st.metric(label=etiq_sub, value=val_mostrar)
                         else:
-                            st.warning("No se encontraron elementos con la palabra 'Tornillo', 'Pija' o 'Remache' en la base de datos.")
+                            st.metric("🔩 Ref. Tornillería", 0)
 
                     st.markdown("---")
                     
                     # --- BÚSQUEDA GENERAL DE INVENTARIO ---
                     st.markdown("#### 📋 Todos los Perfiles y Materiales")
-                    busqueda = st.text_input("🔍 Buscar material (ej: Marco, 3893, Sillar, Chapa)")
+                    
+                    # Si seleccionó un tornillo específico en la métrica, lo filtramos automáticamente en la tabla principal
+                    if 'ref_elegida' in locals() and not ref_elegida.startswith("Todas las Ref."):
+                        df_tabla = df[df["Descripcion"].astype(str) == ref_elegida]
+                        st.info(f"📌 Mostrando únicamente la referencia seleccionada: **{ref_elegida}**")
+                    else:
+                        busqueda = st.text_input("🔍 Buscar material (ej: Marco, 3893, Sillar, Chapa)")
+                        if busqueda:
+                            df_tabla = df[
+                                df["Descripcion"].astype(str).str.contains(busqueda, case=False, na=False)
+                                | df["Referencia"].astype(str).str.contains(busqueda, case=False, na=False)
+                            ]
+                        else:
+                            df_tabla = df
 
-                    if busqueda:
-                        df = df[
-                            df["Descripcion"].astype(str).str.contains(busqueda, case=False, na=False)
-                            | df["Referencia"].astype(str).str.contains(busqueda, case=False, na=False)
-                        ]
-
-                    st.dataframe(df, use_container_width=True)
+                    st.dataframe(df_tabla, use_container_width=True)
                 else:
                     st.info("No hay registros en la hoja de cálculo.")
             else:
